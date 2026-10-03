@@ -4,6 +4,7 @@
  * Description: アップロードした JPEG / PNG を WebP にして軽くします（元の JPEG / PNG は残しません）。サムネイルなどのサイズ違いも WebP で作ります。
  * Version: 1.0.0
  * Author: donnma
+ * Author URI: https://donnma.com/
  * Plugin URI: https://github.com/donnma777/wp-webp-upload
  * License: GPLv2 or later
  * Requires PHP: 8.0
