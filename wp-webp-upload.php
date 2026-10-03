@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: WebP Upload
- * Description: アップロードした JPEG / PNG を WebP にして軽くします。サムネイルなどのサイズ違いも WebP で作ります。元の画像を残しておけば、あとから元に戻せます。
+ * Description: アップロードした JPEG / PNG を WebP にして軽くします。サムネイルなどのサイズ違いも WebP で作ります。元の画像を残しておけば、あとから元に戻せます。変換の一時停止や、作らないサイズも選べます。
  * Version: 1.1.0
  * Author: donnma
  * Author URI: https://donnma.com/
@@ -29,6 +29,16 @@
 if (!defined('ABSPATH')) exit;
 
 const DWU_SOURCE_META = '_dwu_source';
+
+function dwu_enabled(): bool {
+	return get_option('dwu_enabled', '1') === '1';
+}
+
+/** 作らないサイズの名前 */
+function dwu_skip_sizes(): array {
+	$v = get_option('dwu_skip_sizes', []);
+	return is_array($v) ? array_values(array_filter($v, 'is_string')) : [];
+}
 
 function dwu_keep_original(): bool {
 	return get_option('dwu_keep_original', '1') === '1';
@@ -78,6 +88,7 @@ add_filter('wp_handle_upload', 'dwu_convert_upload', 10, 2);
 function dwu_convert_upload($upload, $context) {
 	$type = $upload['type'] ?? '';
 	$file = $upload['file'] ?? '';
+	if (!dwu_enabled()) return $upload;
 	if (!in_array($type, ['image/jpeg', 'image/png'], true) || !$file || !is_file($file)) return $upload;
 	if (preg_match('/-orig\.(jpe?g|png)$/i', $file)) return $upload;
 	$args = ['mime_type' => $type, 'output_mime_type' => 'image/webp'];
@@ -129,6 +140,12 @@ add_action('add_attachment', function ($id) {
 		update_post_meta($id, DWU_SOURCE_META, $GLOBALS['dwu_pending'][$key]);
 		unset($GLOBALS['dwu_pending'][$key]);
 	}
+});
+
+// 作らないサイズ（WebP に変換しない画像も含めて、サイト全体に効く）
+add_filter('intermediate_image_sizes_advanced', function ($sizes) {
+	foreach (dwu_skip_sizes() as $name) unset($sizes[$name]);
+	return $sizes;
 });
 
 // サイズ違い（サムネイルなど）を WebP で作るときの画質
@@ -321,7 +338,11 @@ function dwu_backup_size(): int {
 //  管理画面
 // =====================================================
 add_action('admin_init', function () {
+	register_setting('dwu', 'dwu_enabled', ['type' => 'string', 'default' => '1', 'sanitize_callback' => fn($v) => $v === '1' ? '1' : '0']);
 	register_setting('dwu', 'dwu_keep_original', ['type' => 'string', 'default' => '1', 'sanitize_callback' => fn($v) => $v === '1' ? '1' : '0']);
+	register_setting('dwu', 'dwu_skip_sizes', ['type' => 'array', 'default' => [], 'sanitize_callback' => fn($v) => is_array($v)
+		? array_values(array_unique(array_filter(array_map('strval', $v), fn($n) => preg_match('/^[A-Za-z0-9_-]{1,100}$/', $n))))
+		: []]);
 });
 
 add_action('admin_menu', function () {
@@ -417,9 +438,25 @@ function dwu_render_page() {
 		<h2>設定</h2>
 		<form method="post" action="options.php">
 			<?php settings_fields('dwu'); ?>
-			<label><input type="checkbox" name="dwu_keep_original" value="1" <?php checked(dwu_keep_original()); ?>> 元の画像を残す</label>
+			<p><label><input type="checkbox" name="dwu_enabled" value="1" <?php checked(dwu_enabled()); ?>> WebP に変換する</label></p>
+			<p class="description">外すと、変換を一時停止します。そのあいだに上げた画像は JPEG / PNG のまま置きます。すでに WebP にした画像はそのままです。</p>
+			<p><label><input type="checkbox" name="dwu_keep_original" value="1" <?php checked(dwu_keep_original()); ?>> 元の画像を残す</label></p>
 			<p class="description">残しておくと、あとで画質を落とさずに元に戻せます。そのぶんサーバーの容量を使います。<br>
 				元の画像は外から見られないフォルダに置きます（Apache / LiteSpeed の場合。nginx のサーバーではフォルダ名を推測されにくくしているだけです）。</p>
+
+			<h3>作らないサイズ</h3>
+			<p class="description">チェックしたサイズは、これから上げる画像では作りません（WebP に変換しない画像も含めて、サイト全体に効きます）。すでにあるファイルは消しません。<br>
+				テーマ・プラグインのサイズを止めると、一覧のサムネイルなどで大きい画像を縮めて表示するため、かえって重くなることがあります。</p>
+			<?php $skip = dwu_skip_sizes(); ?>
+			<fieldset style="margin-top:8px">
+				<?php foreach (wp_get_registered_image_subsizes() as $name => $s) :
+					$size = sprintf('%s × %s', $s['width'] ?: '自動', $s['height'] ?: '自動') . (!empty($s['crop']) ? '（切り抜き）' : '');
+					$core = in_array($name, ['thumbnail', 'medium', 'medium_large', 'large', '1536x1536', '2048x2048'], true); ?>
+					<label style="display:block;margin:2px 0"><input type="checkbox" name="dwu_skip_sizes[]" value="<?php echo esc_attr($name); ?>" <?php checked(in_array($name, $skip, true)); ?>>
+						<?php echo esc_html($name); ?> <span style="color:#646970"><?php echo esc_html($size . '・' . ($core ? 'WordPress 本体' : 'テーマ・プラグイン')); ?></span></label>
+				<?php endforeach; ?>
+			</fieldset>
+			<p class="description">迷ったら 1536x1536 と 2048x2048 だけ止めるのがおすすめです。ブログの本文の幅ではほとんど使われません。</p>
 			<?php submit_button('保存'); ?>
 		</form>
 
